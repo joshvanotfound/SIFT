@@ -1,0 +1,165 @@
+<?xml version="1.0" encoding="utf-8"?>
+
+<LinearLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/reelItemRoot"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="horizontal"
+    android:layout_marginBottom="8dp"
+    android:background="@drawable/bg_console_card"
+    android:clipToPadding="false">
+
+    <!--
+        State accent.
+        Processing = amber
+        Completed = green
+        Failed = red
+        Queued = muted
+    -->
+    <View
+        android:id="@+id/statusAccentBar"
+        android:layout_width="2dp"
+        android:layout_height="match_parent"
+        android:background="#D8952E" />
+
+    <!-- Main card content -->
+    <LinearLayout
+        android:id="@+id/reelContent"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_weight="1"
+        android:orientation="vertical"
+        android:paddingStart="12dp"
+        android:paddingEnd="12dp"
+        android:paddingTop="11dp"
+        android:paddingBottom="11dp">
+
+        <!-- Header -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <!-- Reel identifier -->
+            <TextView
+                android:id="@+id/reelNumberText"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="reel_012"
+                android:textSize="13sp"
+                android:textStyle="bold"
+                android:fontFamily="monospace"
+                android:textColor="#E8E8E6"
+                android:singleLine="true"
+                android:ellipsize="end" />
+
+            <!-- Progress percentage -->
+            <TextView
+                android:id="@+id/reelPercentText"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="68%"
+                android:textSize="12sp"
+                android:textStyle="bold"
+                android:fontFamily="monospace"
+                android:textColor="#D8952E"
+                android:gravity="end"
+                android:layout_marginEnd="4dp" />
+
+        </LinearLayout>
+
+        <!-- Source / URL -->
+        <TextView
+            android:id="@+id/reelUrlText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="3dp"
+            android:background="@android:color/transparent"
+            android:text="instagram.com/reel/DbTA4mq..."
+            android:textSize="10sp"
+            android:fontFamily="monospace"
+            android:textColor="#666B70"
+            android:textColorLink="#666B70"
+            android:autoLink="none"
+            android:linksClickable="false"
+            android:clickable="false"
+            android:focusable="false"
+            android:singleLine="true"
+            android:ellipsize="middle" />
+
+        <!-- Current operation -->
+        <TextView
+            android:id="@+id/reelOperationText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="downloading_video"
+            android:textSize="12sp"
+            android:textStyle="bold"
+            android:textColor="#A8ADB2"
+            android:singleLine="true"
+            android:ellipsize="end" />
+
+        <!-- Secondary technical information -->
+        <TextView
+            android:id="@+id/reelDetailText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:text="yt-dlp · active"
+            android:textSize="10sp"
+            android:fontFamily="monospace"
+            android:textColor="#555A5F"
+            android:singleLine="true"
+            android:ellipsize="end" />
+
+        <!-- File information
+             Hidden until actual media information is available -->
+        <TextView
+            android:id="@+id/reelFileInfoText"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="5dp"
+            android:text="MP4 · 1920x1080 · 17.8 MB"
+            android:textSize="10sp"
+            android:fontFamily="monospace"
+            android:textColor="#666B70"
+            android:singleLine="true"
+            android:ellipsize="end"
+            android:visibility="gone" />
+
+        <!-- Progress -->
+        <ProgressBar
+            android:id="@+id/reelProgressBar"
+            style="?android:attr/progressBarStyleHorizontal"
+            android:layout_width="match_parent"
+            android:layout_height="3dp"
+            android:layout_marginTop="8dp"
+            android:max="100"
+            android:progress="68"
+            android:progressDrawable="@drawable/progress_console" />
+
+    </LinearLayout>
+
+    <!-- ========================================================= -->
+    <!-- ACTION BUTTON                                             -->
+    <!-- ========================================================= -->
+
+    <TextView
+        android:id="@+id/reelActionButton"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:layout_gravity="center_vertical"
+        android:gravity="center"
+        android:text="⋯"
+        android:textSize="18sp"
+        android:textStyle="bold"
+        android:textColor="#666B70"
+        android:clickable="true"
+        android:focusable="true"
+        android:contentDescription="Reel actions" />
+
+</LinearLayout>

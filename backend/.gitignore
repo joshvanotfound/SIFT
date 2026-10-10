@@ -1,0 +1,28 @@
+
+Secrets
+
+.env
+.env.*
+!.env.example
+
+Dependencies
+
+node_modules/
+
+Downloaded and generated media
+
+downloads/
+*.mp4
+*.part
+*.prepared.mp4
+
+Local processing history and runtime files
+
+reels.json
+*.log
+
+OS and editor files
+
+.DS_Store
+Thumbs.db
+.vscode/

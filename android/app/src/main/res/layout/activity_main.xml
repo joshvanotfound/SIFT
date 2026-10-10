@@ -1,0 +1,226 @@
+<?xml version="1.0" encoding="utf-8"?>
+<androidx.constraintlayout.widget.ConstraintLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/main"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#0B0D0F"
+    android:paddingStart="18dp"
+    android:paddingEnd="18dp"
+    android:paddingTop="12dp"
+    android:paddingBottom="0dp">
+    <!-- ========================================================= -->
+    <!-- CONNECTION STATUS                                         -->
+    <!-- ========================================================= -->
+    <LinearLayout
+        android:id="@+id/statusPill"
+        android:layout_width="wrap_content"
+        android:layout_height="32dp"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        android:background="@drawable/bg_status_pill"
+        android:paddingStart="10dp"
+        android:paddingEnd="10dp"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintStart_toStartOf="parent">
+        <View
+            android:id="@+id/statusDot"
+            android:layout_width="6dp"
+            android:layout_height="6dp"
+            android:background="@drawable/dot_connected" />
+        <TextView
+            android:id="@+id/statusText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="7dp"
+            android:text="PC_ONLINE"
+            android:textSize="11sp"
+            android:textStyle="bold"
+            android:fontFamily="monospace"
+            android:textColor="#3EE089"
+            android:singleLine="true" />
+    </LinearLayout>
+    <!-- ========================================================= -->
+    <!-- SETTINGS / MORE                                          -->
+    <!-- ========================================================= -->
+    <TextView
+        android:id="@+id/settingsButton"
+        android:layout_width="48dp"
+        android:layout_height="48dp"
+        android:gravity="center"
+        android:text="···"
+        android:textSize="18sp"
+        android:textStyle="bold"
+        android:textColor="#666B70"
+        android:clickable="true"
+        android:focusable="true"
+        app:layout_constraintTop_toTopOf="@id/statusPill"
+        app:layout_constraintBottom_toBottomOf="@id/statusPill"
+        app:layout_constraintEnd_toEndOf="parent" />
+    <!-- ========================================================= -->
+    <!-- APP TITLE                                                 -->
+    <!-- ========================================================= -->
+    <TextView
+        android:id="@+id/titleText"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="reel_automator"
+        android:textSize="21sp"
+        android:textStyle="bold"
+        android:fontFamily="monospace"
+        android:textColor="#E8E8E6"
+        android:letterSpacing="0.01"
+        app:layout_constraintTop_toBottomOf="@id/statusPill"
+        app:layout_constraintStart_toStartOf="parent"
+        android:layout_marginTop="18dp" />
+    <TextView
+        android:id="@+id/subtitleText"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="PC media automation"
+        android:textSize="11sp"
+        android:fontFamily="monospace"
+        android:textColor="#5F6469"
+        app:layout_constraintTop_toBottomOf="@id/titleText"
+        app:layout_constraintStart_toStartOf="parent"
+        android:layout_marginTop="3dp" />
+    <!-- ========================================================= -->
+    <!-- URL COMPOSER                                              -->
+    <!-- ========================================================= -->
+    <LinearLayout
+        android:id="@+id/urlComposerCard"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:background="@drawable/bg_console_card"
+        android:padding="12dp"
+        app:layout_constraintTop_toBottomOf="@id/subtitleText"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        android:layout_marginTop="18dp">
+        <TextView
+            android:id="@+id/urlComposerLabel"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="$ paste_url"
+            android:textSize="10sp"
+            android:fontFamily="monospace"
+            android:textColor="#4D5257"
+            android:layout_marginBottom="6dp" />
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:orientation="horizontal"
+            android:gravity="center_vertical"
+            android:background="@drawable/bg_url_input">
+            <com.google.android.material.textfield.TextInputEditText
+                android:id="@+id/urlInput"
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
+                android:layout_weight="1"
+                android:background="@android:color/transparent"
+                android:hint="https://instagram.com/reel/..."
+                android:inputType="textUri"
+                android:textColor="#A8ADB2"
+                android:textColorHint="#41464B"
+                android:textSize="11sp"
+                android:fontFamily="monospace"
+                android:paddingStart="10dp"
+                android:paddingEnd="6dp"
+                android:singleLine="true" />
+            <TextView
+                android:id="@+id/pasteButton"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:gravity="center"
+                android:text="↳"
+                android:textSize="17sp"
+                android:textColor="#666B70"
+                android:clickable="true"
+                android:focusable="true" />
+        </LinearLayout>
+    </LinearLayout>
+    <!-- ========================================================= -->
+    <!-- SEND BUTTON                                               -->
+    <!-- ========================================================= -->
+    <com.google.android.material.button.MaterialButton
+        android:id="@+id/sendButton"
+        android:layout_width="0dp"
+        android:layout_height="48dp"
+        android:text="→  send_to_pc"
+        android:textSize="12sp"
+        android:textStyle="bold"
+        android:textAllCaps="false"
+        android:fontFamily="monospace"
+        android:textColor="#3EE089"
+        app:cornerRadius="7dp"
+        app:backgroundTint="#173327"
+        app:strokeColor="#28553F"
+        app:strokeWidth="1dp"
+        app:elevation="0dp"
+        app:layout_constraintTop_toBottomOf="@id/urlComposerCard"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        android:layout_marginTop="8dp" />
+    <!-- ========================================================= -->
+    <!-- QUEUE HEADER                                              -->
+    <!-- ========================================================= -->
+    <LinearLayout
+        android:id="@+id/queueHeader"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical"
+        app:layout_constraintTop_toBottomOf="@id/sendButton"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        android:layout_marginTop="20dp">
+        <TextView
+            android:id="@+id/queueTitle"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="QUEUE"
+            android:textSize="10sp"
+            android:textStyle="bold"
+            android:fontFamily="monospace"
+            android:letterSpacing="0.08"
+            android:textColor="#62676C" />
+        <TextView
+            android:id="@+id/queueSummary"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="0 proc · 0 done · 0 fail"
+            android:textSize="10sp"
+            android:fontFamily="monospace"
+            android:textColor="#555A5F" />
+    </LinearLayout>
+    <!-- ========================================================= -->
+    <!-- QUEUE DIVIDER                                             -->
+    <!-- ========================================================= -->
+    <View
+        android:id="@+id/queueDivider"
+        android:layout_width="0dp"
+        android:layout_height="1dp"
+        android:background="#171A1D"
+        app:layout_constraintTop_toBottomOf="@id/queueHeader"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        android:layout_marginTop="8dp" />
+    <!-- ========================================================= -->
+    <!-- RECYCLER VIEW                                             -->
+    <!-- ========================================================= -->
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/reelRecyclerView"
+        android:layout_width="0dp"
+        android:layout_height="0dp"
+        android:clipToPadding="false"
+        android:paddingTop="8dp"
+        android:paddingBottom="16dp"
+        android:overScrollMode="never"
+        app:layout_constraintTop_toBottomOf="@id/queueDivider"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent" />
+</androidx.constraintlayout.widget.ConstraintLayout>

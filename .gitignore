@@ -1,0 +1,36 @@
+
+Secrets
+
+.env
+.env.*
+!.env.example
+
+Node.js
+
+node_modules/
+npm-debug.log*
+
+Local processing data and media
+
+backend/reels.json
+backend/downloads/
+*.mp4
+*.prepared.mp4
+*.part
+*.log
+
+Android / Gradle generated files
+
+.gradle/
+**/build/
+**/.gradle/
+**/local.properties
+**/.idea/
+**/.kotlin/
+**/.cxx/
+**/.externalNativeBuild/
+
+OS files
+
+.DS_Store
+Thumbs.db
