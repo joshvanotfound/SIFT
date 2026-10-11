@@ -1,11 +1,11 @@
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 
-const queueFile =
-    path.join(
-        __dirname,
-        "reels.json"
-    );
+const queueFile = path.join(
+    __dirname,
+    "reels.json"
+);
 
 
 // ========================================
@@ -13,35 +13,22 @@ const queueFile =
 // ========================================
 
 function loadReels() {
-
     try {
-
-        if (
-            !fs.existsSync(
-                queueFile
-            )
-        ) {
-
+        if (!fs.existsSync(queueFile)) {
             fs.writeFileSync(
                 queueFile,
                 "[]"
             );
         }
 
-
-        const data =
-            fs.readFileSync(
-                queueFile,
-                "utf8"
-            );
-
-
-        return JSON.parse(
-            data
+        const data = fs.readFileSync(
+            queueFile,
+            "utf8"
         );
 
-    } catch (error) {
+        return JSON.parse(data);
 
+    } catch (error) {
         console.error(
             "Failed to load reels:",
             error
@@ -56,17 +43,10 @@ function loadReels() {
 // SAVE REELS
 // ========================================
 
-function saveReels(
-    reels
-) {
-
+function saveReels(reels) {
     fs.writeFileSync(
         queueFile,
-        JSON.stringify(
-            reels,
-            null,
-            2
-        )
+        JSON.stringify(reels, null, 2)
     );
 }
 
@@ -75,56 +55,29 @@ function saveReels(
 // ADD REEL
 // ========================================
 
-function addReel(
-    url
-) {
-
-    const reels =
-        loadReels();
-
+function addReel(url) {
+    const reels = loadReels();
 
     const reel = {
+        // Unique ID prevents same-millisecond collisions.
+        id: `${Date.now()}-${crypto.randomUUID()}`,
 
-        id:
-            Date.now().toString(),
+        url: url,
 
-        url:
-            url,
-
-        // ========================================
         // ORIGINAL SOURCE CAPTION
-        // ========================================
+        caption: "",
 
-        caption:
-            "",
-
-        // ========================================
         // PROCESSING INFORMATION
-        // ========================================
+        stage: "Queued",
+        status: "queued",
+        progress: 0,
 
-        stage:
-            "Queued",
-
-        status:
-            "queued",
-
-        progress:
-            0,
-
-        createdAt:
-            new Date().toISOString()
+        createdAt: new Date().toISOString()
     };
 
+    reels.push(reel);
 
-    reels.push(
-        reel
-    );
-
-
-    saveReels(
-        reels
-    );
-
+    saveReels(reels);
 
     return reel;
 }
@@ -135,7 +88,6 @@ function addReel(
 // ========================================
 
 function getReels() {
-
     return loadReels();
 }
 
@@ -145,8 +97,6 @@ function getReels() {
 // ========================================
 
 module.exports = {
-
     addReel,
-
     getReels
 };
