@@ -5,21 +5,33 @@ const fs = require("fs");
 const path = require("path");
 const WebSocket = require("ws");
 
-const { addReel, getReels } = require("./queue");
+const {
+    addReel,
+    getReels,
+    saveReels
+} = require("./queue");
 
 const {
     processReel,
-    verifyDownloadedFile
+    verifyDownloadedFile,
+    cleanupInterruptedReel
 } = require("./processor");
 
 const {
-    isPublishedMediaPresent
+    isPublishedMediaPresent,
+    getAllAccountMedia
 } = require("./instagramUploader");
 
 const app = express();
 
 const PORT = 3000;
 const WEBSOCKET_PORT = 3001;
+
+const INSTAGRAM_CHECK_INTERVAL = 30 * 1000;
+
+// Remains false until startup recovery finishes successfully.
+// New Reel submissions are rejected while this is false.
+let startupRecoveryFinished = false;
 
 
 // ========================================
@@ -33,6 +45,7 @@ function startReelProcessing(reel) {
         console.log(
             `Reel is already processing: ${reel.id}`
         );
+
         return false;
     }
 
@@ -115,151 +128,271 @@ function isValidUrl(value) {
 
 
 // ========================================
-// SAVE REELS
+// MARK PUBLISHING STATE AS UNCERTAIN
 // ========================================
 
-function saveReels(reels) {
-    const queueFile = path.join(
-        __dirname,
-        "reels.json"
+function markPublishUncertain(reelId, detail, message) {
+    const currentReels = getReels();
+
+    const currentReel = currentReels.find(
+        item => item.id === reelId
     );
 
-    fs.writeFileSync(
-        queueFile,
-        JSON.stringify(reels, null, 2)
+    if (!currentReel) {
+        console.warn(
+            `[${reelId}] Cannot update publishing state: Reel not found.`
+        );
+        return false;
+    }
+
+    if (currentReel.status === "published") {
+        console.warn(
+            `[${reelId}] Already published. Preserving published state.`
+        );
+        return false;
+    }
+
+    currentReel.status = "failed";
+    currentReel.stage = "Publishing needs verification";
+    currentReel.detail =
+        "instagram_publish_uncertain_check_instagram_before_retry";
+    currentReel.lastError = message;
+    currentReel.publishRecoveryRequired = true;
+
+    saveReels(currentReels);
+
+    console.warn(
+        `[${reelId}] WARNING: Instagram publishing outcome is uncertain.`
     );
+    console.warn(
+        "Check your Instagram Reels. If this Reel was uploaded, " +
+        "delete it manually before retrying."
+    );
+
+    broadcast({
+        type: "reel_update",
+        id: reelId,
+        status: "failed",
+        stage: currentReel.stage,
+        progress: currentReel.progress ?? 75,
+        detail: currentReel.detail,
+        warning:
+            "Check Instagram. If this Reel was uploaded, delete it manually before retrying."
+    });
+
+    return true;
 }
 
 
 // ========================================
 // RECOVER INTERRUPTED REELS SAFELY
 // ========================================
-//
-// IMPORTANT:
-//
-// A Reel interrupted during Instagram publishing
-// might already be live on Instagram.
-//
-// Never automatically retry an uncertain publish.
-//
-// Other interrupted processing jobs become failed.
-// Queued jobs can resume normally.
-//
-// ========================================
 
-function recoverInterruptedReels() {
-    const reels = getReels();
+async function recoverInterruptedReels() {
+    const initialReels = getReels();
 
-    let changed = false;
-
-    const activeStatuses = [
+    const restartableStatuses = [
         "downloading",
         "processing",
         "uploading",
-        "publishing",
         "interrupted"
     ];
 
-    for (const reel of reels) {
+    for (const reel of initialReels) {
+        if (reel.status === "published") {
+            continue;
+        }
 
-        // ----------------------------------------
-        // PRESERVE UNCERTAIN PUBLISHES
-        // ----------------------------------------
-
-        if (
+        const needsPublishRecovery =
+            reel.publishAttemptStarted === true ||
             reel.status === "publish_uncertain" ||
-            reel.publishRecoveryRequired === true
-        ) {
-            reel.status = "publish_uncertain";
-            reel.stage = "Publishing";
-            reel.detail =
-                "instagram_publish_result_uncertain_manual_check_required";
+            reel.status === "publishing" ||
+            reel.publishRecoveryRequired === true;
 
-            reel.publishRecoveryRequired = true;
-
-            changed = true;
-
-            console.warn(
-                `[${reel.id}] Publish result is uncertain. ` +
-                "Automatic retry is blocked."
+        if (needsPublishRecovery) {
+            console.log(
+                `[${reel.id}] Checking Instagram after interrupted publishing...`
             );
+
+            try {
+                const snapshot = Array.isArray(
+                    reel.instagramMediaBeforePublish
+                )
+                    ? reel.instagramMediaBeforePublish
+                    : [];
+
+                const previousIds = new Set(
+                    snapshot.map(media => media.id)
+                );
+
+                const currentMedia = await getAllAccountMedia();
+
+                const newMedia = currentMedia.filter(
+                    media => !previousIds.has(media.id)
+                );
+
+                // Automatically recover only when exactly one new Reel
+                // matches the saved caption.
+                const matchingMedia = newMedia.filter(media =>
+                    ["VIDEO", "REELS"].includes(media.media_type) &&
+                    typeof media.caption === "string" &&
+                    media.caption === (reel.caption || "")
+                );
+
+                if ( 
+                    matchingMedia.length === 1 &&
+                    reel.instagramMediaId &&
+                    matchingMedia[0].id === 
+                reel.instagramMediaId
+                ) {
+                    const matched = matchingMedia[0];
+                    const currentReels = getReels();
+                    const currentReel = currentReels.find(
+                        item => item.id === reel.id
+                    );
+
+                    if (!currentReel) {
+                        continue;
+                    }
+
+                    currentReel.status = "published";
+                    currentReel.stage = "Published";
+                    currentReel.progress = 100;
+                    currentReel.instagramMediaId = matched.id;
+                    currentReel.detail =
+                        "instagram_publish_confirmed_during_startup_recovery";
+                    currentReel.publishedAt =
+                        matched.timestamp || new Date().toISOString();
+                    currentReel.publishRecoveryRequired = false;
+                    currentReel.publishAttemptStarted = false;
+                    currentReel.lastError = null;
+
+                    saveReels(currentReels);
+
+                    broadcast({
+                        type: "reel_update",
+                        id: reel.id,
+                        status: "published",
+                        stage: "Published",
+                        progress: 100,
+                        detail: currentReel.detail
+                    });
+
+                    console.log(
+                        `[${reel.id}] Instagram Reel confirmed: ${matched.id}`
+                    );
+
+                    continue;
+                }
+
+                const message = snapshot.length === 0
+                    ? "No saved Instagram snapshot is available. Check Instagram manually before retrying."
+                    : matchingMedia.length > 1
+                        ? "Multiple new Reels match this caption. Check Instagram manually before retrying."
+                        : "SIFT could not confidently identify the published Reel. Check Instagram manually before retrying.";
+
+                markPublishUncertain(
+                    reel.id,
+                    "instagram_publish_uncertain_check_instagram_before_retry",
+                    message
+                );
+
+            } catch (error) {
+                console.error(
+                    `[${reel.id}] Instagram recovery check failed:`,
+                    error.message
+                );
+
+                markPublishUncertain(
+                    reel.id,
+                    "instagram_recovery_check_failed_manual_check_required",
+                    "SIFT could not check Instagram. Check your Reels manually before retrying."
+                );
+            }
 
             continue;
         }
 
-        // ----------------------------------------
-        // SERVER STOPPED DURING PUBLISHING
-        // ----------------------------------------
-
-        if (reel.status === "publishing") {
-            reel.status = "publish_uncertain";
-            reel.stage = "Publishing";
-            reel.detail =
-                "server_stopped_during_instagram_publish_manual_check_required";
-
-            reel.publishRecoveryRequired = true;
-
-            reel.lastError =
-                "Server stopped during Instagram publishing. " +
-                "Verify Instagram before retrying.";
-
-            changed = true;
-
-            console.warn(
-                `[${reel.id}] Server stopped during publishing.`
-            );
-
-            console.warn(
-                "Marked publish_uncertain to prevent duplicate publishing."
-            );
-
-            continue;
-        }
-
-        // ----------------------------------------
-        // OTHER INTERRUPTED JOBS
-        // ----------------------------------------
-
-        if (!activeStatuses.includes(reel.status)) {
+        if (!restartableStatuses.includes(reel.status)) {
             continue;
         }
 
         console.log(
-            `Interrupted Reel detected: ${reel.id}`
+            `[${reel.id}] Interrupted Reel detected. Previous status: ${reel.status}`
         );
 
-        console.log(
-            `Previous status: ${reel.status}`
-        );
+        try {
+            await cleanupInterruptedReel(reel.id);
 
-        console.log(
-            `Previous progress: ${reel.progress}%`
-        );
+            const currentReels = getReels();
+            const currentReel = currentReels.find(
+                item => item.id === reel.id
+            );
 
-        reel.status = "failed";
-        reel.stage = "Failed";
-        reel.progress = 0;
-        reel.detail =
-            "server_stopped_during_processing";
+            if (
+                !currentReel ||
+                !restartableStatuses.includes(currentReel.status) ||
+                currentReel.publishAttemptStarted === true ||
+                currentReel.publishRecoveryRequired === true
+            ) {
+                continue;
+            }
 
-        reel.lastError =
-            "Server stopped while processing this Reel. " +
-            "Review it before submitting it again.";
+            currentReel.status = "queued";
+            currentReel.stage = "Queued";
+            currentReel.progress = 0;
+            currentReel.detail =
+                "restarting_from_download_after_server_restart";
+            currentReel.lastError = null;
 
-        changed = true;
+            delete currentReel.cloudinaryPublicId;
+            delete currentReel.cloudinaryUrl;
+            delete currentReel.instagramContainerId;
 
-        console.log(
-            `Marked interrupted Reel as failed: ${reel.id}`
-        );
+            saveReels(currentReels);
+
+            Object.assign(reel, currentReel);
+
+            console.log(
+                `[${reel.id}] Cleanup completed. Reel reset to queued.`
+            );
+
+        } catch (error) {
+            console.error(
+                `[${reel.id}] Recovery cleanup failed:`,
+                error.message
+            );
+
+            const currentReels = getReels();
+            const currentReel = currentReels.find(
+                item => item.id === reel.id
+            );
+
+            if (!currentReel) {
+                continue;
+            }
+
+            currentReel.status = "failed";
+            currentReel.stage = "Recovery cleanup failed";
+            currentReel.progress = 0;
+            currentReel.detail =
+                "recovery_cleanup_failed_manual_attention_required";
+            currentReel.lastError = error.message;
+
+            saveReels(currentReels);
+
+            broadcast({
+                type: "reel_update",
+                id: reel.id,
+                status: "failed",
+                stage: currentReel.stage,
+                progress: 0,
+                detail: currentReel.detail
+            });
+        }
     }
 
-    if (changed) {
-        saveReels(reels);
-
-        console.log(
-            "Interrupted Reel recovery completed."
-        );
-    }
+    console.log("Interrupted Reel recovery checks completed.");
 }
 
 
@@ -270,7 +403,8 @@ function recoverInterruptedReels() {
 app.get("/api/status", (req, res) => {
     res.json({
         status: "online",
-        service: "SIFT"
+        service: "SIFT",
+        ready: startupRecoveryFinished
     });
 });
 
@@ -280,6 +414,14 @@ app.get("/api/status", (req, res) => {
 // ========================================
 
 app.post("/api/reels", (req, res) => {
+    if (!startupRecoveryFinished) {
+        return res.status(503).json({
+            success: false,
+            message:
+                "SIFT is recovering interrupted jobs. Try again when startup recovery finishes."
+        });
+    }
+
     const { url } = req.body;
 
     if (!url || typeof url !== "string") {
@@ -317,7 +459,22 @@ app.post("/api/reels", (req, res) => {
 // ========================================
 
 app.get("/api/reels", (req, res) => {
-    res.json(getReels());
+    const reels = getReels().map(reel => {
+        if (
+            reel.status === "failed" &&
+            reel.publishRecoveryRequired === true
+        ) {
+            return {
+                ...reel,
+                warning:
+                    "Check Instagram. If this Reel was uploaded, delete it manually before retrying."
+            };
+        }
+
+        return reel;
+    });
+
+    res.json(reels);
 });
 
 
@@ -352,15 +509,44 @@ app.get("/api/reels/:id/video", (req, res) => {
 app.delete("/api/reels/:id/file", (req, res) => {
     const reelId = req.params.id;
 
-    const downloadsDir = path.join(
-        __dirname,
-        "downloads"
-    );
-
     const filePath = path.join(
-        downloadsDir,
+        __dirname,
+        "downloads",
         `${reelId}.mp4`
     );
+
+    const reels = getReels();
+
+    const reel = reels.find(
+        item => item.id === reelId
+    );
+
+    if (!reel) {
+        return res.status(404).json({
+            success: false,
+            message: "Reel not found"
+        });
+    }
+
+    // Never delete a file while processing or publishing is active.
+    if (
+        processingReels.has(reelId) ||
+        [
+            "downloading",
+            "processing",
+            "uploading",
+            "publishing",
+            "publish_uncertain"
+        ].includes(reel.status) ||
+        reel.publishAttemptStarted === true ||
+        reel.publishRecoveryRequired === true
+    ) {
+        return res.status(409).json({
+            success: false,
+            message:
+                "This Reel is processing or requires Instagram verification. Its file cannot be deleted yet."
+        });
+    }
 
     if (!fs.existsSync(filePath)) {
         return res.status(404).json({
@@ -372,30 +558,24 @@ app.delete("/api/reels/:id/file", (req, res) => {
     try {
         fs.unlinkSync(filePath);
 
-        const reels = getReels();
-
-        const reel = reels.find(
-            item => item.id === reelId
-        );
-
-        if (reel) {
+        // Deleting the PC copy must not overwrite a known Instagram state.
+        if (
+            reel.status !== "published" &&
+            reel.status !== "deleted"
+        ) {
             reel.status = "file_missing";
             reel.stage = "File deleted";
             reel.progress = 0;
-
-            saveReels(reels);
         }
 
-        console.log(
-            `Deleted PC video for reel: ${reelId}`
-        );
+        saveReels(reels);
 
         broadcast({
             type: "reel_update",
             id: reelId,
-            status: "file_missing",
-            stage: "File deleted",
-            progress: 0
+            status: reel.status,
+            stage: reel.stage,
+            progress: reel.progress
         });
 
         res.json({
@@ -437,8 +617,46 @@ app.delete("/api/reels/:id", (req, res) => {
         });
     }
 
-    // Uncertain publishing jobs are deliberately
-    // NOT removable until their result is checked.
+    // Never remove active jobs or jobs with an uncertain publish result.
+    if (
+        processingReels.has(reelId) ||
+        [
+            "downloading",
+            "processing",
+            "uploading",
+            "publishing",
+            "publish_uncertain",
+            "published"
+        ].includes(reel.status) ||
+        reel.publishAttemptStarted === true ||
+        reel.publishRecoveryRequired === true
+    ) {
+        return res.status(409).json({
+            success: false,
+            message:
+                "This Reel is active, published, or requires Instagram verification. It cannot be removed yet."
+        });
+    }
+
+    // Failed jobs with incomplete cleanup must remain for investigation.
+    const cleanupFailed =
+        reel.stage === "Recovery cleanup failed" ||
+        reel.detail === "recovery_cleanup_failed_manual_attention_required";
+
+    const hasCloudinaryReference =
+        Boolean(reel.cloudinaryPublicId) ||
+        Boolean(reel.cloudinaryUrl);
+
+    if (
+        reel.status === "failed" &&
+        (cleanupFailed || hasCloudinaryReference)
+    ) {
+        return res.status(409).json({
+            success: false,
+            message:
+                "Cleanup is not confirmed complete. Keep this record until its remaining files and Cloudinary assets are checked."
+        });
+    }
 
     const removableStatuses = [
         "file_missing",
@@ -446,9 +664,7 @@ app.delete("/api/reels/:id", (req, res) => {
         "failed"
     ];
 
-    if (
-        !removableStatuses.includes(reel.status)
-    ) {
+    if (!removableStatuses.includes(reel.status)) {
         return res.status(409).json({
             success: false,
             message: "Reel cannot be removed yet"
@@ -484,14 +700,7 @@ app.delete("/api/reels/:id", (req, res) => {
 let instagramCheckRunning = false;
 
 async function checkPublishedReels() {
-
-    // PREVENT OVERLAPPING CHECKS
-
     if (instagramCheckRunning) {
-        console.log(
-            "Instagram check already running."
-        );
-
         return;
     }
 
@@ -517,28 +726,19 @@ async function checkPublishedReels() {
             `Checking ${instagramReels.length} Instagram Reel(s)...`
         );
 
-        // CHECK EACH REEL
-
         for (const reel of instagramReels) {
             try {
-                const exists =
-                    await isPublishedMediaPresent(
-                        reel.instagramMediaId
-                    );
-
-                // REEL STILL EXISTS
+                const exists = await isPublishedMediaPresent(
+                    reel.instagramMediaId
+                );
 
                 if (exists) {
-
-                    // RECOVER FALSE "DELETED" STATUS
-
                     if (reel.status === "deleted") {
                         const currentReels = getReels();
 
-                        const currentReel =
-                            currentReels.find(
-                                item => item.id === reel.id
-                            );
+                        const currentReel = currentReels.find(
+                            item => item.id === reel.id
+                        );
 
                         if (
                             currentReel &&
@@ -551,10 +751,6 @@ async function checkPublishedReels() {
                                 "Instagram Reel is live";
 
                             saveReels(currentReels);
-
-                            console.log(
-                                `Instagram Reel restored to published: ${reel.id}`
-                            );
 
                             broadcast({
                                 type: "reel_update",
@@ -570,26 +766,15 @@ async function checkPublishedReels() {
                     continue;
                 }
 
-                // MEDIA NOT FOUND
-
                 const currentReels = getReels();
 
-                const currentReel =
-                    currentReels.find(
-                        item => item.id === reel.id
-                    );
+                const currentReel = currentReels.find(
+                    item => item.id === reel.id
+                );
 
-                if (!currentReel) {
+                if (!currentReel || currentReel.status === "deleted") {
                     continue;
                 }
-
-                // ALREADY DELETED
-
-                if (currentReel.status === "deleted") {
-                    continue;
-                }
-
-                // MARK AS DELETED
 
                 currentReel.status = "deleted";
                 currentReel.stage = "Instagram deleted";
@@ -598,10 +783,6 @@ async function checkPublishedReels() {
                     "Reel deleted on Instagram";
 
                 saveReels(currentReels);
-
-                console.log(
-                    `Instagram Reel deleted: ${reel.id}`
-                );
 
                 broadcast({
                     type: "reel_update",
@@ -613,16 +794,11 @@ async function checkPublishedReels() {
                 });
 
             } catch (error) {
-
-                // NEVER mark a Reel as deleted because
-                // of an API, network, or token error.
-
+                // A network/API error is not proof that the Reel was deleted.
                 console.log(
                     `Instagram check failed for ${reel.id}:`,
                     error.message
                 );
-
-                continue;
             }
         }
 
@@ -635,8 +811,6 @@ async function checkPublishedReels() {
 // ========================================
 // INSTAGRAM CHECK LOOP
 // ========================================
-
-const INSTAGRAM_CHECK_INTERVAL = 30 * 1000;
 
 setInterval(() => {
     checkPublishedReels().catch(error => {
@@ -652,73 +826,73 @@ setInterval(() => {
 // START HTTP SERVER
 // ========================================
 
-app.listen(PORT, "0.0.0.0", () => {
+app.listen(PORT, "0.0.0.0", async () => {
     console.log(
         `SIFT API running on port ${PORT}`
     );
 
-    // RECOVER INTERRUPTED JOBS BEFORE RESUMING QUEUED JOBS
+    try {
+        await recoverInterruptedReels();
 
-    recoverInterruptedReels();
+        const reels = getReels();
 
-    const reels = getReels();
+        for (const reel of reels) {
 
-    reels.forEach(reel => {
+            if (reel.status === "downloaded") {
+                verifyDownloadedFile(reel, broadcast);
+                continue;
+            }
 
-        // COMPLETED DOWNLOAD
+            if (
+                reel.status === "publish_uncertain" ||
+                reel.status === "publishing" ||
+                reel.publishRecoveryRequired === true ||
+                reel.publishAttemptStarted === true
+            ) {
+                console.warn(
+                    `[${reel.id}] Waiting for manual Instagram verification.`
+                );
 
-        if (reel.status === "downloaded") {
-            verifyDownloadedFile(reel, broadcast);
-            return;
+                continue;
+            }
+
+            if (reel.status === "failed") {
+                console.log(
+                    `Failed Reel waiting for review: ${reel.id}`
+                );
+
+                continue;
+            }
+
+            if (reel.status === "queued") {
+                console.log(
+                    "Resuming queued Reel:",
+                    reel.id
+                );
+
+                startReelProcessing(reel);
+            }
         }
 
-        // UNCERTAIN INSTAGRAM PUBLISH
+        startupRecoveryFinished = true;
 
-        if (
-            reel.status === "publish_uncertain" ||
-            reel.publishRecoveryRequired === true
-        ) {
-            console.warn(
-                `[${reel.id}] Waiting for manual Instagram verification.`
+        console.log(
+            "SIFT startup recovery completed. Server is ready."
+        );
+
+        checkPublishedReels().catch(error => {
+            console.error(
+                "Initial Instagram check failed:",
+                error
             );
+        });
 
-            console.warn(
-                "This Reel will NOT be automatically republished."
-            );
+    } catch (error) {
+        startupRecoveryFinished = false;
 
-            return;
-        }
-
-        // FAILED
-
-        if (reel.status === "failed") {
-            console.log(
-                `Failed Reel waiting for removal: ${reel.id}`
-            );
-
-            return;
-        }
-
-        // QUEUED REEL
-
-        if (reel.status === "queued") {
-            console.log(
-                "Resuming queued reel:",
-                reel.id
-            
-            );
-
-            startReelProcessing(reel);
-
-        }
-    });
-
-    // INITIAL INSTAGRAM CHECK
-
-    checkPublishedReels().catch(error => {
         console.error(
-            "Initial Instagram check failed:",
+            "Startup recovery failed. Queued jobs will not be resumed:",
             error
         );
-    });
+    }
 });

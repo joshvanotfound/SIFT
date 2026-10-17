@@ -193,7 +193,8 @@ async function publishInstagramReel(
     videoUrl,
     caption = "",
     shareToFeed = false,
-    onContainerCreated = null
+    onContainerCreated = null,
+    beforePublish = null
 ) {
     const containerId = await createReelContainer(
         videoUrl,
@@ -218,6 +219,22 @@ async function publishInstagramReel(
     }
 
     await waitForContainer(containerId);
+
+    // Persist a safety marker before sending the publish request.
+    // If saving fails, stop without attempting to publish.
+    if (beforePublish) {
+        try {
+            await beforePublish(containerId);
+        } catch (error) {
+            error.containerId = containerId;
+            error.uncertain = false;
+            error.message =
+                "Could not save the Instagram publish safety marker. " +
+                "Publishing was stopped. " + error.message;
+
+            throw error;
+        }
+    }
 
     try {
         const mediaId = await publishReel(containerId);
@@ -258,7 +275,7 @@ async function getPublishedMedia(mediaId) {
 
 async function getAccountMedia(afterCursor = null) {
     const params = new URLSearchParams({
-        fields: "id",
+        fields: "id,caption,timestamp,media_type",
         limit: "100",
         access_token: ACCESS_TOKEN
     });
@@ -272,6 +289,31 @@ async function getAccountMedia(afterCursor = null) {
         `/${IG_USER_ID}/media?${params.toString()}`;
 
     return request("GET", url);
+}
+
+// ========================================
+// GET ALL ACCOUNT MEDIA PAGES
+// ========================================
+
+async function getAllAccountMedia() {
+    const allMedia = [];
+    let afterCursor = null;
+
+    while (true) {
+        const result = await getAccountMedia(afterCursor);
+        const media = Array.isArray(result.data) ? result.data : [];
+
+        allMedia.push(...media);
+
+        const nextCursor = result.paging?.cursors?.after;
+        const hasNextPage = Boolean(result.paging?.next && nextCursor);
+
+        if (!hasNextPage) {
+            return allMedia;
+        }
+
+        afterCursor = nextCursor;
+    }
 }
 
 // ========================================
@@ -312,5 +354,6 @@ module.exports = {
     publishInstagramReel,
     getPublishedMedia,
     getAccountMedia,
+    getAllAccountMedia,
     isPublishedMediaPresent
 };

@@ -12,15 +12,29 @@ const {
 } = require("./cloudinaryUploader");
 
 const {
-    publishInstagramReel
+    publishInstagramReel,
+    getAllAccountMedia
 } = require("./instagramUploader");
 
 const fs = require("fs");
 const path = require("path");
 
-const queueFile = path.join(__dirname, "reels.json");
+const {
+    getReels,
+    saveReels,
+    updateReel: updateQueuedReel
+} = require("./queue");
 
 const downloadsDir = path.join(__dirname, "downloads");
+
+
+// ========================================
+// CLOUDINARY PUBLIC ID
+// ========================================
+
+function getCloudinaryPublicId(reelId) {
+    return `sift/reels/${reelId}`;
+}
 
 
 // ========================================
@@ -33,16 +47,22 @@ function calculateOverallProgress(stage, stageProgress = 0) {
     switch (stage) {
         case "Queued":
             return 0;
+
         case "Downloading":
             return Math.round(progress * 0.25);
+
         case "Processing":
             return Math.round(25 + progress * 0.25);
+
         case "Cloud Uploading":
             return Math.round(50 + progress * 0.25);
+
         case "Publishing":
             return Math.round(75 + progress * 0.25);
+
         case "Published":
             return 100;
+
         default:
             return 0;
     }
@@ -61,26 +81,17 @@ function updateReel(
     detail,
     broadcast
 ) {
-    const reels = loadReels();
-
-    const reel = reels.find(item => item.id === id);
-
-    if (!reel) {
-        console.error("Reel not found:", id);
-        return;
-    }
-
     const overallProgress = calculateOverallProgress(
         stage,
         stageProgress
     );
 
-    reel.stage = stage;
-    reel.status = status;
-    reel.progress = overallProgress;
-    reel.detail = detail;
-
-    saveReels(reels);
+    updateQueuedReel(id, {
+        stage,
+        status,
+        progress: overallProgress,
+        detail
+    });
 
     console.log(
         `[${id}] ${stage} - ${detail} - ${overallProgress}%`
@@ -127,14 +138,21 @@ async function runWithSmoothProgress(
         if (stageProgress < 95) {
             stageProgress += 1;
 
-            updateReel(
-                reelId,
-                stage,
-                status,
-                stageProgress,
-                detail,
-                broadcast
-            );
+            try {
+                updateReel(
+                    reelId,
+                    stage,
+                    status,
+                    stageProgress,
+                    detail,
+                    broadcast
+                );
+            } catch (error) {
+                console.error(
+                    `[${reelId}] Progress update failed:`,
+                    error.message
+                );
+            }
         }
     }, intervalMs);
 
@@ -161,36 +179,19 @@ async function runWithSmoothProgress(
 
 
 // ========================================
-// QUEUE STORAGE
-// ========================================
-
-function loadReels() {
-    try {
-        const data = fs.readFileSync(queueFile, "utf8");
-        return JSON.parse(data);
-    } catch (error) {
-        console.error("Failed to load reels:", error);
-        return [];
-    }
-}
-
-function saveReels(reels) {
-    fs.writeFileSync(
-        queueFile,
-        JSON.stringify(reels, null, 2)
-    );
-}
-
-
-// ========================================
-// VIDEO FILE
+// VIDEO FILE PATHS
 // ========================================
 
 function getOutputFile(reelId) {
-    return path.join(
-        downloadsDir,
-        `${reelId}.mp4`
-    );
+    return path.join(downloadsDir, `${reelId}.mp4`);
+}
+
+function getPreparedFile(reelId) {
+    return path.join(downloadsDir, `${reelId}.prepared.mp4`);
+}
+
+function getBackupFile(reelId) {
+    return `${getOutputFile(reelId)}.original.bak`;
 }
 
 
@@ -246,12 +247,8 @@ async function processVideoFile(inputPath, reelId, broadcast) {
 
     console.log("Video requires preparation.");
 
-    const preparedPath = path.join(
-        downloadsDir,
-        `${reelId}.prepared.mp4`
-    );
-
-    const backupPath = `${inputPath}.original.bak`;
+    const preparedPath = getPreparedFile(reelId);
+    const backupPath = getBackupFile(reelId);
 
     if (fs.existsSync(preparedPath)) {
         await fs.promises.unlink(preparedPath);
@@ -296,7 +293,7 @@ async function processVideoFile(inputPath, reelId, broadcast) {
     if (fs.existsSync(backupPath)) {
         throw new Error(
             `A video backup already exists: ${backupPath}. ` +
-            "Inspect it before continuing."
+            "Cleanup is required before processing can continue."
         );
     }
 
@@ -321,14 +318,10 @@ async function processVideoFile(inputPath, reelId, broadcast) {
         );
     }
 
-    try {
-        await fs.promises.unlink(backupPath);
-    } catch (cleanupError) {
-        console.warn(
-            "Prepared video installed, but original backup could not be deleted:",
-            cleanupError.message
-        );
-    }
+    // The backup must be removed before processing continues.
+    // If removal fails, the main error handler will attempt full cleanup.
+
+    await fs.promises.unlink(backupPath);
 
     console.log("Prepared video moved to final path.");
 
@@ -337,54 +330,184 @@ async function processVideoFile(inputPath, reelId, broadcast) {
 
 
 // ========================================
-// AUTO CLEANUP AFTER SUCCESSFUL PUBLISH
+// CLEANUP LOCAL REEL FILES
 // ========================================
 
-async function cleanupPublishedReel(reelId, cloudinaryPublicId) {
+async function cleanupLocalReelFiles(reelId) {
+    const files = [
+        getOutputFile(reelId),
+        getPreparedFile(reelId),
+        getBackupFile(reelId)
+    ];
+
+    const failures = [];
+
+    for (const filePath of files) {
+        try {
+            await fs.promises.unlink(filePath);
+
+            console.log(
+                `[${reelId}] Removed local file: ${path.basename(filePath)}`
+            );
+        } catch (error) {
+            // A missing file is already clean.
+            if (error.code !== "ENOENT") {
+                failures.push(
+                    `${path.basename(filePath)}: ${error.message}`
+                );
+
+                console.error(
+                    `[${reelId}] Failed to remove ${filePath}:`,
+                    error.message
+                );
+            }
+        }
+    }
+
+    // Verify that all expected artifacts are absent.
+    for (const filePath of files) {
+        try {
+            await fs.promises.access(filePath);
+
+            failures.push(
+                `${path.basename(filePath)} still exists after cleanup`
+            );
+        } catch (error) {
+            if (error.code !== "ENOENT") {
+                failures.push(
+                    `Could not verify ${path.basename(filePath)}: ` +
+                    error.message
+                );
+            }
+        }
+    }
+
+    return failures;
+}
+
+
+// ========================================
+// SHARED REEL CLEANUP
+// ========================================
+
+async function cleanupReelArtifacts(
+    reelId,
+    cloudinaryPublicId,
+    { strict = false } = {}
+) {
     console.log(
-        `\nStarting automatic cleanup for reel ${reelId}...`
+        `\nStarting cleanup for Reel ${reelId}...`
     );
+
+    // Always attempt every local deletion, even if one fails.
+    const failures = await cleanupLocalReelFiles(reelId);
 
     if (cloudinaryPublicId) {
         try {
-            await deleteVideo(cloudinaryPublicId);
+            const result = await deleteVideo(cloudinaryPublicId);
+
+            // Cloudinary destroy normally returns "ok" when deleted
+            // and "not found" when no matching asset exists.
+            if (
+                result?.result !== "ok" &&
+                result?.result !== "not found"
+            ) {
+                throw new Error(
+                    `Unexpected Cloudinary deletion result: ${
+                        result?.result ?? "no result returned"
+                    }`
+                );
+            }
 
             console.log(
-                `Cloudinary video deleted for reel ${reelId}.`
+                `[${reelId}] Cloudinary cleanup result: ` +
+                `${result.result} (${cloudinaryPublicId})`
             );
         } catch (error) {
+            failures.push(
+                `Cloudinary asset ${cloudinaryPublicId}: ${error.message}`
+            );
+
             console.error(
-                `Cloudinary cleanup failed for reel ${reelId}:`,
+                `[${reelId}] Cloudinary cleanup failed:`,
                 error.message
             );
         }
-    } else {
-        console.log("No Cloudinary public ID available.");
     }
 
-    const outputFile = getOutputFile(reelId);
+    if (failures.length > 0) {
+        const message =
+            `Cleanup incomplete for Reel ${reelId}: ` +
+            failures.join("; ");
 
-    if (fs.existsSync(outputFile)) {
-        try {
-            await fs.promises.unlink(outputFile);
-
-            console.log(
-                `Local video deleted for reel ${reelId}.`
-            );
-        } catch (error) {
-            console.error(
-                `Local video cleanup failed for reel ${reelId}:`,
-                error.message
-            );
+        if (strict) {
+            throw new Error(message);
         }
-    } else {
-        console.log(
-            `Local video already missing for reel ${reelId}.`
+
+        console.error(message);
+        return false;
+    }
+
+    console.log(
+        `Cleanup completed for Reel ${reelId}.`
+    );
+
+    return true;
+}
+
+
+// ========================================
+// CLEANUP INTERRUPTED REEL BEFORE RECOVERY
+// ========================================
+
+async function cleanupInterruptedReel(reelId) {
+    const reels = getReels();
+
+    const reel = reels.find(item => item.id === reelId);
+
+    if (!reel) {
+        throw new Error(
+            `Cannot clean up Reel ${reelId}: it was not found in the queue.`
+        );
+    }
+
+    // Never delete assets belonging to a confirmed or potentially
+    // published Reel during interrupted-job recovery.
+    if (
+        reel.status === "published" ||
+        reel.status === "publish_uncertain" ||
+        reel.publishAttemptStarted === true ||
+        reel.publishRecoveryRequired === true
+    ) {
+        throw new Error(
+            `Recovery cleanup blocked for Reel ${reelId}: ` +
+            "its publishing state must be preserved."
         );
     }
 
     console.log(
-        `Automatic cleanup finished for reel ${reelId}.`
+        `[${reelId}] Cleaning abandoned files before recovery.`
+    );
+
+    // The public ID is deterministic, so this also attempts to
+    // remove an upload whose successful response was never saved.
+    return cleanupReelArtifacts(
+        reelId,
+        reel.cloudinaryPublicId || getCloudinaryPublicId(reelId),
+        { strict: true }
+    );
+}
+
+
+// ========================================
+// AUTO CLEANUP AFTER SUCCESSFUL PUBLISH
+// ========================================
+
+async function cleanupPublishedReel(reelId, cloudinaryPublicId) {
+    return cleanupReelArtifacts(
+        reelId,
+        cloudinaryPublicId || getCloudinaryPublicId(reelId),
+        { strict: false }
     );
 }
 
@@ -394,7 +517,7 @@ async function cleanupPublishedReel(reelId, cloudinaryPublicId) {
 // ========================================
 
 function saveCaption(reelId, caption) {
-    const reels = loadReels();
+    const reels = getReels();
 
     const reel = reels.find(item => item.id === reelId);
 
@@ -422,11 +545,9 @@ async function processReel(reel, broadcast) {
     console.log("======================================\n");
 
     try {
-        // ----------------------------------------
         // VERIFY THE LATEST SAVED STATE
-        // ----------------------------------------
 
-        const latestReels = loadReels();
+        const latestReels = getReels();
 
         const latestReel = latestReels.find(
             item => item.id === reel.id
@@ -442,6 +563,7 @@ async function processReel(reel, broadcast) {
         if (
             latestReel.status === "publish_uncertain" ||
             latestReel.publishRecoveryRequired === true ||
+            latestReel.publishAttemptStarted === true ||
             latestReel.status === "published"
         ) {
             console.warn(
@@ -564,7 +686,7 @@ async function processReel(reel, broadcast) {
 
         console.log("Final video metadata:", metadata);
 
-        const reels = loadReels();
+        const reels = getReels();
 
         const currentReel = reels.find(
             item => item.id === reel.id
@@ -588,7 +710,27 @@ async function processReel(reel, broadcast) {
             broadcast
         );
 
+        // ========================================
         // CLOUD UPLOAD
+        // ========================================
+
+        // Persist the predictable public ID before uploading.
+        // Recovery can then find an asset even if the server crashes
+        // after Cloudinary accepts the upload but before the response
+        // is saved locally.
+
+        const expectedPublicId = getCloudinaryPublicId(reel.id);
+
+        updateQueuedReel(reel.id, {
+            cloudinaryPublicId: expectedPublicId,
+            cloudinaryUrl: null,
+            detail: "cloud_upload_preparing"
+        });
+
+        console.log(
+            `[${reel.id}] Cloudinary public ID saved before upload: ` +
+            expectedPublicId
+        );
 
         const cloudinaryResult = await runWithSmoothProgress(
             reel.id,
@@ -599,6 +741,21 @@ async function processReel(reel, broadcast) {
             broadcast,
             300
         );
+
+        if (cloudinaryResult.publicId !== expectedPublicId) {
+            throw new Error(
+                `Cloudinary public ID mismatch. Expected ` +
+                `${expectedPublicId}, received ${cloudinaryResult.publicId}.`
+            );
+        }
+
+        // SAVE COMPLETED UPLOAD DETAILS
+
+        updateQueuedReel(reel.id, {
+            cloudinaryPublicId: cloudinaryResult.publicId,
+            cloudinaryUrl: cloudinaryResult.secureUrl,
+            detail: "cloud_upload_completed"
+        });
 
         console.log(
             "Cloudinary upload completed:",
@@ -616,7 +773,7 @@ async function processReel(reel, broadcast) {
 
         // GET SAVED ORIGINAL CAPTION
 
-        const captionReels = loadReels();
+        const captionReels = getReels();
 
         const captionReel = captionReels.find(
             item => item.id === reel.id
@@ -627,7 +784,9 @@ async function processReel(reel, broadcast) {
         console.log("\nOriginal caption to publish:");
         console.log(originalCaption);
 
+        // ========================================
         // INSTAGRAM PUBLISHING
+        // ========================================
 
         const instagramResult = await runWithSmoothProgress(
             reel.id,
@@ -638,26 +797,43 @@ async function processReel(reel, broadcast) {
                 cloudinaryResult.secureUrl,
                 originalCaption,
                 false,
+
+                // SAVE CONTAINER ID BEFORE WAITING
+
                 async containerId => {
-                    const currentReels = loadReels();
-
-                    const currentReel = currentReels.find(
-                        item => item.id === reel.id
-                    );
-
-                    if (!currentReel) {
-                        throw new Error(
-                            "Reel not found while saving Instagram container ID."
-                        );
-                    }
-
-                    currentReel.instagramContainerId = containerId;
-                    currentReel.detail = "instagram_container_created";
-
-                    saveReels(currentReels);
+                    updateQueuedReel(reel.id, {
+                        instagramContainerId: containerId,
+                        detail: "instagram_container_created"
+                    });
 
                     console.log(
                         `[${reel.id}] Instagram container ID saved: ${containerId}`
+                    );
+                },
+
+                // SAVE INSTAGRAM SNAPSHOT AND SAFETY MARKER BEFORE media_publish
+
+                async containerId => {
+                    const instagramMediaBeforePublish =
+                        await getAllAccountMedia();
+
+                    updateQueuedReel(reel.id, {
+                        instagramContainerId: containerId,
+                        instagramMediaBeforePublish,
+                        publishAttemptStarted: true,
+                        stage: "Publishing",
+                        status: "publishing",
+                        progress: 75,
+                        detail: "instagram_publish_attempt_started"
+                    });
+
+                    console.log(
+                        `[${reel.id}] Instagram snapshot saved: ` +
+                        `${instagramMediaBeforePublish.length} existing media items.`
+                    );
+
+                    console.log(
+                        `[${reel.id}] Publish safety marker saved.`
                     );
                 }
             ),
@@ -670,54 +846,27 @@ async function processReel(reel, broadcast) {
             instagramResult.mediaId
         );
 
-        updateReel(
-            reel.id,
-            "Publishing",
-            "publishing",
-            100,
-            "instagram_publish_completed",
-            broadcast
-        );
-
         // SAVE FINAL INFORMATION
 
-        const updatedReels = loadReels();
-
-        const publishedReel = updatedReels.find(
-            item => item.id === reel.id
-        );
-
-        if (publishedReel) {
-            publishedReel.instagramContainerId =
-                instagramResult.containerId;
-
-            publishedReel.instagramMediaId =
-                instagramResult.mediaId;
-
-            publishedReel.cloudinaryPublicId =
-                cloudinaryResult.publicId;
-
-            publishedReel.cloudinaryUrl =
-                cloudinaryResult.secureUrl;
-
-            publishedReel.status = "published";
-            publishedReel.stage = "Published";
-            publishedReel.progress = 100;
-            publishedReel.detail = "instagram_publish_complete";
-
-            publishedReel.publishedAt = new Date().toISOString();
-
-            publishedReel.publishRecoveryRequired = false;
-
-            saveReels(updatedReels);
-        }
+        const publishedReel = updateQueuedReel(reel.id, {
+            instagramContainerId: instagramResult.containerId,
+            instagramMediaId: instagramResult.mediaId,
+            cloudinaryPublicId: cloudinaryResult.publicId,
+            cloudinaryUrl: cloudinaryResult.secureUrl,
+            status: "published",
+            stage: "Published",
+            progress: 100,
+            detail: "instagram_publish_complete",
+            publishedAt: new Date().toISOString(),
+            publishRecoveryRequired: false
+        });
 
         // FINAL BROADCAST
 
         if (broadcast) {
             broadcast({
                 type: "reel_update",
-                id: reel.id,
+                id: publishedReel.id,
                 stage: "Published",
                 status: "published",
                 progress: 100,
@@ -731,7 +880,8 @@ async function processReel(reel, broadcast) {
         );
         console.log("======================================\n");
 
-        // AUTO CLEANUP
+        // AUTO CLEANUP AFTER SUCCESS.
+        // A cleanup failure must not undo the confirmed publication.
 
         await cleanupPublishedReel(
             reel.id,
@@ -742,78 +892,168 @@ async function processReel(reel, broadcast) {
         console.error("\nProcessing failed:");
         console.error(error);
 
-        // UNCERTAIN INSTAGRAM PUBLISH RESULT
+        let currentReel;
 
-        if (error.uncertain === true) {
-            const reels = loadReels();
-
-            const currentReel = reels.find(
+        try {
+            currentReel = getReels().find(
                 item => item.id === reel.id
             );
-
-            if (currentReel) {
-                currentReel.stage = "Publishing";
-                currentReel.status = "publish_uncertain";
-                currentReel.progress = 75;
-
-                currentReel.detail =
-                    "instagram_publish_result_uncertain_manual_check_required";
-
-                currentReel.publishRecoveryRequired = true;
-                currentReel.lastError = error.message;
-
-                if (error.containerId) {
-                    currentReel.instagramContainerId =
-                        error.containerId;
-                }
-
-                saveReels(reels);
-            }
-
+        } catch (queueError) {
             console.error(
-                `[${reel.id}] Instagram publishing result is uncertain.`
+                `[${reel.id}] Could not read queue after failure:`,
+                queueError.message
             );
 
-            console.error(
-                "Do not retry this Reel until the Instagram account is checked."
-            );
+            // Do not perform destructive cleanup if the current publishing
+            // state cannot be read safely.
+            return;
+        }
 
-            if (broadcast) {
-                broadcast({
-                    type: "reel_update",
-                    id: reel.id,
+        if (!currentReel) {
+            console.warn(
+                `[${reel.id}] Queue record is missing after failure.`
+            );
+            return;
+        }
+
+        // NEVER CLEAN UP OR RETRY A CONFIRMED PUBLISHED REEL.
+
+        if (currentReel.status === "published") {
+            console.warn(
+                `[${reel.id}] Publication is confirmed. ` +
+                "Preserving the published record."
+            );
+            return;
+        }
+
+        // UNCERTAIN INSTAGRAM PUBLISH RESULT.
+        //
+        // If the safety marker was persisted, publication might have
+        // happened even if a later local operation failed.
+        // Preserve the source asset until publication is investigated.
+
+        const publishUncertain =
+            error.uncertain === true ||
+            currentReel.publishAttemptStarted === true ||
+            currentReel.publishRecoveryRequired === true ||
+            currentReel.status === "publish_uncertain";
+
+        if (publishUncertain) {
+            try {
+                updateQueuedReel(reel.id, {
                     stage: "Publishing",
                     status: "publish_uncertain",
                     progress: 75,
                     detail:
-                        "instagram_publish_result_uncertain_manual_check_required"
+                        "instagram_publish_result_uncertain_manual_check_required",
+                    publishRecoveryRequired: true,
+                    lastError: error.message,
+                    ...(error.containerId
+                        ? { instagramContainerId: error.containerId }
+                        : {})
                 });
+
+                console.error(
+                    `[${reel.id}] Instagram publishing result is uncertain.`
+                );
+
+                console.error(
+                    "Do not retry or delete publishing assets until Instagram is checked."
+                );
+
+                if (broadcast) {
+                    broadcast({
+                        type: "reel_update",
+                        id: reel.id,
+                        stage: "Publishing",
+                        status: "publish_uncertain",
+                        progress: 75,
+                        detail:
+                            "instagram_publish_result_uncertain_manual_check_required"
+                    });
+                }
+            } catch (saveError) {
+                console.error(
+                    `[${reel.id}] CRITICAL: Could not persist uncertain ` +
+                    "publishing state:",
+                    saveError.message
+                );
             }
 
             return;
         }
 
-        // OTHER PROCESSING ERRORS
+        // ========================================
+        // NON-PUBLISHING FAILURE
+        // ========================================
+        //
+        // Attempt local and Cloudinary cleanup before leaving the job
+        // failed. Use the deterministic ID even if uploadVideo never
+        // returned its result.
 
-        const reels = loadReels();
+        let cleanupSucceeded = false;
+        let cleanupError = null;
 
-        const currentReel = reels.find(
-            item => item.id === reel.id
-        );
+        try {
+            await cleanupReelArtifacts(
+                reel.id,
+                currentReel.cloudinaryPublicId ||
+                    getCloudinaryPublicId(reel.id),
+                { strict: true }
+            );
 
-        if (currentReel) {
-            currentReel.lastError = error.message;
-            saveReels(reels);
+            cleanupSucceeded = true;
+        } catch (cleanupFailure) {
+            cleanupError = cleanupFailure;
+            console.error(
+                `[${reel.id}] Cleanup after processing failure was incomplete:`,
+                cleanupFailure.message
+            );
         }
 
-        updateReel(
-            reel.id,
-            "Failed",
-            "failed",
-            0,
-            "video_processing_failed",
-            broadcast
-        );
+        // Keep the failed record for diagnosis.
+        // If cleanup failed, preserve the Cloudinary ID so a later
+        // cleanup attempt still knows which remote asset to remove.
+
+        try {
+            const updates = {
+                stage: cleanupSucceeded
+                    ? "Failed"
+                    : "Recovery cleanup failed",
+                status: "failed",
+                progress: 0,
+                detail: cleanupSucceeded
+                    ? "processing_failed_artifacts_cleaned_manual_restart_required"
+                    : "processing_failed_cleanup_incomplete_manual_attention_required",
+                lastError: cleanupError
+                    ? `${error.message}; Cleanup failure: ${cleanupError.message}`
+                    : error.message
+            };
+
+            if (cleanupSucceeded) {
+                updates.cloudinaryPublicId = null;
+                updates.cloudinaryUrl = null;
+            }
+
+            updateQueuedReel(reel.id, updates);
+
+            if (broadcast) {
+                broadcast({
+                    type: "reel_update",
+                    id: reel.id,
+                    stage: updates.stage,
+                    status: "failed",
+                    progress: 0,
+                    detail: updates.detail
+                });
+            }
+        } catch (saveError) {
+            console.error(
+                `[${reel.id}] CRITICAL: Failed to save the final error ` +
+                "state. Inspect the queue and artifacts before retrying:",
+                saveError.message
+            );
+        }
     }
 }
 
@@ -852,5 +1092,12 @@ function verifyDownloadedFile(reel, broadcast) {
 
 module.exports = {
     processReel,
-    verifyDownloadedFile
+    verifyDownloadedFile,
+    cleanupInterruptedReel,
+    cleanupPublishedReel,
+
+    // Shared helpers for coordinated server recovery and cleanup.
+    cleanupReelArtifacts,
+    cleanupLocalReelFiles,
+    getCloudinaryPublicId
 };
